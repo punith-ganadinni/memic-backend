@@ -1,15 +1,20 @@
 """
-Azure Form Recognizer client wrapper.
+Azure Document Intelligence client wrapper.
 
-This module provides a clean interface to Azure Form Recognizer with
-retry logic, error handling, and cost tracking.
+This module provides a clean interface to Azure Document Intelligence (upgraded from Form Recognizer)
+with retry logic, error handling, and cost tracking.
+
+Key differences from old SDK:
+- Uses DocumentIntelligenceClient instead of DocumentAnalysisClient
+- Supports figure extraction via result.figures (required for vision pipeline)
+- Updated async patterns for better performance
 """
 
 import asyncio
 import logging
 from typing import Any, Optional
 
-from azure.ai.formrecognizer import DocumentAnalysisClient
+from azure.ai.documentintelligence.aio import DocumentIntelligenceClient
 from azure.core.credentials import AzureKeyCredential
 from azure.core.exceptions import HttpResponseError
 
@@ -20,31 +25,44 @@ logger = logging.getLogger(__name__)
 
 class AzureFormRecognizerClient:
     """
-    Wrapper for Azure Form Recognizer with retry logic and error handling.
+    Wrapper for Azure Document Intelligence with retry logic and error handling.
 
-    Cost per 1000 pages (as of 2024):
+    Cost per 1000 pages (as of 2025):
     - Read model: ~$1.50
     - Layout model: ~$10.00
     - Prebuilt models: Varies by type
 
-    We use the 'prebuilt-layout' model for comprehensive extraction.
+    We use the 'prebuilt-layout' model for comprehensive extraction including figures.
     """
 
     def __init__(self):
-        """Initialize Azure Form Recognizer client."""
+        """Initialize Azure Document Intelligence client."""
         if not config.AZURE_AFR_ENDPOINT or not config.AZURE_AFR_API_KEY:
             raise ValueError(
-                "Azure Form Recognizer credentials not configured. "
+                "Azure Document Intelligence credentials not configured. "
                 "Please set AZURE_AFR_ENDPOINT and AZURE_AFR_API_KEY"
             )
 
         self.endpoint = config.AZURE_AFR_ENDPOINT
-        self.client = DocumentAnalysisClient(
+        self.client = DocumentIntelligenceClient(
             endpoint=self.endpoint,
             credential=AzureKeyCredential(config.AZURE_AFR_API_KEY),
         )
 
-        logger.info(f"Azure Form Recognizer client initialized: {self.endpoint}")
+        logger.info(f"Azure Document Intelligence client initialized: {self.endpoint}")
+
+    async def __aenter__(self):
+        """Async context manager entry."""
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit."""
+        await self.close()
+
+    async def close(self):
+        """Close the client connection."""
+        if self.client:
+            await self.client.close()
 
     async def analyze_document(
         self,
@@ -52,14 +70,14 @@ class AzureFormRecognizerClient:
         model_id: str = "prebuilt-layout",
     ) -> Any:
         """
-        Analyze document using Azure Form Recognizer.
+        Analyze document using Azure Document Intelligence.
 
         Args:
             file_content: Document bytes
-            model_id: AFR model to use (default: prebuilt-layout)
+            model_id: Model to use (default: prebuilt-layout)
 
         Returns:
-            Analyzed document result
+            Analyzed document result with support for figures extraction
 
         Raises:
             RuntimeError: If analysis fails after retries
@@ -67,69 +85,75 @@ class AzureFormRecognizerClient:
         for attempt in range(config.AFR_RETRY_ATTEMPTS):
             try:
                 logger.info(
-                    f"Starting AFR analysis with model '{model_id}' "
+                    f"Starting Document Intelligence analysis with model '{model_id}' "
                     f"(attempt {attempt + 1}/{config.AFR_RETRY_ATTEMPTS})"
                 )
 
-                # Begin analysis (async operation)
-                poller = self.client.begin_analyze_document(
+                # Begin analysis (async operation using new SDK)
+                poller = await self.client.begin_analyze_document(
                     model_id=model_id,
-                    document=file_content,
+                    body=file_content,
+                    content_type="application/octet-stream",
                 )
 
                 # Wait for completion with timeout
                 result = await asyncio.wait_for(
-                    asyncio.to_thread(poller.result),
+                    poller.result(),
                     timeout=config.AFR_POLLING_TIMEOUT,
                 )
 
-                logger.info("AFR analysis completed successfully")
+                logger.info(
+                    f"Document Intelligence analysis completed successfully. "
+                    f"Figures detected: {len(result.figures) if hasattr(result, 'figures') and result.figures else 0}"
+                )
                 return result
 
             except asyncio.TimeoutError:
                 logger.error(
-                    f"AFR analysis timeout after {config.AFR_POLLING_TIMEOUT}s "
+                    f"Document Intelligence analysis timeout after {config.AFR_POLLING_TIMEOUT}s "
                     f"(attempt {attempt + 1})"
                 )
                 if attempt < config.AFR_RETRY_ATTEMPTS - 1:
                     await asyncio.sleep(config.AFR_RETRY_DELAY * (attempt + 1))
                     continue
-                raise RuntimeError("AFR analysis timed out after all retries")
+                raise RuntimeError("Document Intelligence analysis timed out after all retries")
 
             except HttpResponseError as e:
-                logger.error(f"AFR HTTP error: {e.status_code} - {e.message}")
+                logger.error(f"Document Intelligence HTTP error: {e.status_code} - {e.message}")
                 if e.status_code == 429:  # Rate limit
                     if attempt < config.AFR_RETRY_ATTEMPTS - 1:
                         wait_time = config.AFR_RETRY_DELAY * (2 ** attempt)
                         logger.info(f"Rate limited, waiting {wait_time}s before retry")
                         await asyncio.sleep(wait_time)
                         continue
-                raise RuntimeError(f"AFR HTTP error: {e.message}")
+                raise RuntimeError(f"Document Intelligence HTTP error: {e.message}")
 
             except Exception as e:
-                logger.error(f"AFR analysis failed: {str(e)}")
+                logger.error(f"Document Intelligence analysis failed: {str(e)}")
                 if attempt < config.AFR_RETRY_ATTEMPTS - 1:
                     await asyncio.sleep(config.AFR_RETRY_DELAY)
                     continue
-                raise RuntimeError(f"AFR analysis failed: {str(e)}")
+                raise RuntimeError(f"Document Intelligence analysis failed: {str(e)}")
 
-        raise RuntimeError("AFR analysis failed after all retry attempts")
+        raise RuntimeError("Document Intelligence analysis failed after all retry attempts")
 
     def extract_sections_from_result(
-        self, result: Any, include_tables: bool = True
-    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        self, result: Any, include_tables: bool = True, include_figures: bool = True
+    ) -> tuple[list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]]:
         """
-        Extract sections and page info from AFR result.
+        Extract sections, page info, and figures from Document Intelligence result.
 
         Args:
-            result: AFR analysis result
+            result: Document Intelligence analysis result
             include_tables: Whether to include table extraction
+            include_figures: Whether to include figure metadata extraction
 
         Returns:
-            tuple: (sections list, page_info dict)
+            tuple: (sections list, page_info dict, figures list)
         """
         sections = []
         page_info = {}
+        figures = []
 
         # Extract page dimensions
         for page in result.pages:
@@ -141,25 +165,31 @@ class AzureFormRecognizerClient:
             }
 
         # Extract paragraphs
-        if hasattr(result, "paragraphs"):
+        if hasattr(result, "paragraphs") and result.paragraphs:
             for para in result.paragraphs:
                 section = self._create_section_from_paragraph(para)
                 sections.append(section)
 
         # Extract tables (if enabled)
-        if include_tables and hasattr(result, "tables"):
+        if include_tables and hasattr(result, "tables") and result.tables:
             for table in result.tables:
                 section = self._create_section_from_table(table)
                 sections.append(section)
+
+        # Extract figures metadata (if enabled) - NEW!
+        if include_figures and hasattr(result, "figures") and result.figures:
+            for figure in result.figures:
+                figure_metadata = self._create_metadata_from_figure(figure)
+                figures.append(figure_metadata)
 
         # Sort by page number and offset
         sections.sort(key=lambda x: (x.get("page_number", 0), x.get("offset", 0)))
 
         logger.info(
-            f"Extracted {len(sections)} sections from {len(page_info)} pages"
+            f"Extracted {len(sections)} sections, {len(figures)} figures from {len(page_info)} pages"
         )
 
-        return sections, page_info
+        return sections, page_info, figures
 
     def _create_section_from_paragraph(self, paragraph: Any) -> dict[str, Any]:
         """
@@ -260,3 +290,47 @@ class AzureFormRecognizerClient:
         )
 
         return f"<table>\n{rows_html}\n</table>"
+
+    def _create_metadata_from_figure(self, figure: Any) -> dict[str, Any]:
+        """
+        Create metadata dict from Document Intelligence figure.
+
+        Args:
+            figure: Document Intelligence figure object
+
+        Returns:
+            dict: Figure metadata with bounding regions for image cropping
+        """
+        # Extract bounding regions (can have multiple regions if figure spans multiple areas)
+        bounding_regions = []
+        if hasattr(figure, "bounding_regions") and figure.bounding_regions:
+            for region in figure.bounding_regions:
+                region_dict = {
+                    "page_number": region.page_number,
+                    "polygon": []
+                }
+                if hasattr(region, "polygon") and region.polygon:
+                    # Convert polygon to flat list [x1, y1, x2, y2, ...]
+                    region_dict["polygon"] = [coord for point in region.polygon for coord in (point.x, point.y)]
+                bounding_regions.append(region_dict)
+
+        # Extract caption if available
+        caption = ""
+        if hasattr(figure, "caption") and figure.caption:
+            caption = figure.caption.content if hasattr(figure.caption, "content") else str(figure.caption)
+
+        # Extract spans for offset tracking
+        spans = []
+        if hasattr(figure, "spans") and figure.spans:
+            for span in figure.spans:
+                spans.append({
+                    "offset": span.offset,
+                    "length": span.length
+                })
+
+        return {
+            "bounding_regions": bounding_regions,
+            "caption": caption,
+            "spans": spans,
+            "id": getattr(figure, "id", None),
+        }

@@ -34,6 +34,11 @@ ENABLE_ADVANCED_TABLE_EXTRACTION: bool = settings.enable_advanced_table_extracti
 # When disabled: Returns flat section list
 ENABLE_SECTION_HIERARCHY: bool = settings.enable_section_hierarchy
 
+# Vision Extraction: Extracts content from charts/diagrams using vision models
+# Cost: ~$0.01-0.03 per chart/diagram (varies by complexity)
+# When disabled: Figures are skipped (no additional cost)
+ENABLE_VISION_EXTRACTION: bool = settings.enable_vision_extraction
+
 # Azure Form Recognizer Configuration
 AZURE_AFR_ENDPOINT: str = settings.azure_afr_endpoint or ""
 AZURE_AFR_API_KEY: str = settings.azure_afr_api_key or ""
@@ -41,6 +46,11 @@ AZURE_AFR_API_KEY: str = settings.azure_afr_api_key or ""
 # LLM Configuration (for enrichment)
 OPENAI_API_KEY: str = settings.openai_api_key or ""
 OPENAI_MODEL: str = "gpt-4o-mini"  # Cost-effective choice (can be added to main config if needed)
+
+# Vision API Configuration (for chart/diagram extraction)
+OPENAI_VISION_MODEL: str = settings.openai_vision_model
+OPENAI_VISION_TIMEOUT: int = settings.openai_vision_timeout
+OPENAI_VISION_MAX_TOKENS: int = settings.openai_vision_max_tokens
 
 # Parsing Timeouts (in seconds)
 AFR_POLLING_TIMEOUT: int = settings.afr_polling_timeout
@@ -56,8 +66,9 @@ def validate_config() -> dict[str, bool]:
         dict: Status of each service configuration
     """
     validation_status = {
-        "azure_form_recognizer": bool(AZURE_AFR_ENDPOINT and AZURE_AFR_API_KEY),
+        "azure_document_intelligence": bool(AZURE_AFR_ENDPOINT and AZURE_AFR_API_KEY),
         "llm_enrichment": bool(OPENAI_API_KEY) if ENABLE_LLM_ENRICHMENT else True,
+        "vision_extraction": bool(OPENAI_API_KEY) if ENABLE_VISION_EXTRACTION else True,
     }
 
     return validation_status
@@ -78,5 +89,7 @@ def get_enabled_features() -> list[str]:
         features.append("advanced_table_extraction")
     if ENABLE_SECTION_HIERARCHY:
         features.append("section_hierarchy")
+    if ENABLE_VISION_EXTRACTION:
+        features.append("vision_extraction")
 
     return features

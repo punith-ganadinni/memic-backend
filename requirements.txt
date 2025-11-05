@@ -24,8 +24,11 @@ azure-storage-blob==12.19.0
 openpyxl==3.1.2  # Excel file handling and preprocessing
 
 # Document Parsing Dependencies
-azure-ai-formrecognizer==3.3.3  # Azure Form Recognizer for document parsing
+azure-ai-documentintelligence>=1.0.0b4  # Azure Document Intelligence (upgraded from Form Recognizer)
 openai==1.54.4  # OpenAI for optional LLM enrichment
+litellm>=1.52.0  # AI gateway for logging, guardrails, and model management
+PyMuPDF>=1.23.8  # PDF image cropping for vision extraction (fitz)
+Pillow>=10.2.0  # Image processing for vision extraction
 
 # HTTP client dependencies (updated for Python 3.14 compatibility)
 httpcore>=1.0.9  # Required for Python 3.14 compatibility

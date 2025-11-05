@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     enable_llm_enrichment: bool = Field(default=False, env="ENABLE_LLM_ENRICHMENT")
     enable_advanced_table_extraction: bool = Field(default=False, env="ENABLE_ADVANCED_TABLE_EXTRACTION")
     enable_section_hierarchy: bool = Field(default=False, env="ENABLE_SECTION_HIERARCHY")
+    enable_vision_extraction: bool = Field(default=False, env="ENABLE_VISION_EXTRACTION")
+
+    # Vision Extraction Configuration
+    openai_vision_model: str = Field(default="gpt-4o", env="OPENAI_VISION_MODEL")
+    openai_vision_timeout: int = Field(default=100, env="OPENAI_VISION_TIMEOUT")
+    openai_vision_max_tokens: int = Field(default=3000, env="OPENAI_VISION_MAX_TOKENS")
     
     # Pinecone Configuration
     pinecone_api_key: Optional[str] = Field(default=None, env="PINECONE_API_KEY")
